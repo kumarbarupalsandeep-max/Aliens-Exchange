@@ -34,7 +34,7 @@ import { OrderImpactResult, Orderbook } from './utils/engine.ts';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('trade');
-  const [isPaperMode, setIsPaperMode] = useState<boolean>(false);
+  const [isPaperMode, setIsPaperMode] = useState<boolean>(true);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC/USDT');
   const [timeframe, setTimeframe] = useState<string>('15m');
 
