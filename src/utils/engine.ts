@@ -265,7 +265,7 @@ export class DoubleEntryLedger {
   }
 
   public getHistory(): LedgerEntry[] {
-    return [...this.entries];
+    return this.entries.map((entry) => ({ ...entry }));
   }
 
   /**
