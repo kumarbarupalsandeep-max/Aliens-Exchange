@@ -35,7 +35,6 @@ app.use((_req: Request, res: Response, next) => {
 });
 
 // This application is a demo, not a custody or live-trading service.
-const LIVE_LEDGER_OPERATIONS_ENABLED = false;
 
 // Initialize Gemini Client server-side
 const ai = process.env.GEMINI_API_KEY
@@ -245,7 +244,7 @@ let userOrders: any[] = [
     status: 'open',
     createdAt: Date.now() - 1000 * 60 * 42,
     feePaid: 0,
-    isPaper: false,
+    isPaper: true,
   },
   {
     id: 'ORD-97431',
@@ -260,7 +259,7 @@ let userOrders: any[] = [
     status: 'open',
     createdAt: Date.now() - 1000 * 60 * 120,
     feePaid: 0,
-    isPaper: false,
+    isPaper: true,
   },
 ];
 
@@ -492,55 +491,7 @@ app.post('/api/orders', (req: Request, res: Response) => {
     return res.json({ success: true, order: newOrder, message: 'Paper order submitted successfully' });
   }
 
-  // Never allow this demo to mutate real-looking balances as if it were an exchange.
-  if (!LIVE_LEDGER_OPERATIONS_ENABLED) {
-    return res.status(403).json({ error: 'Live trading is disabled: authentication, persistent accounting, and a verified exchange adapter are not configured. Use paper mode.' });
-  }
-
-  // Live order: verify & lock funds through double-entry ledger
-  const [base, quote] = symbol.split('/');
-  const requiredAsset = side === 'buy' ? quote : base;
-  const requiredAmount = side === 'buy' ? parsedPrice * parsedAmount : parsedAmount;
-
-  const currentBal = ledger.getBalance('user_live', requiredAsset);
-  if (currentBal.available < requiredAmount) {
-    return res.status(400).json({
-      error: `Insufficient available ${requiredAsset}: have ${currentBal.available}, required ${requiredAmount.toFixed(4)}`,
-    });
-  }
-
-  // Lock funds in ledger
-  ledger.lockFunds('user_live', requiredAsset, requiredAmount);
-
-  const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-  const isMarket = type === 'market';
-
-  const newOrder = {
-    id: orderId,
-    symbol,
-    side,
-    type,
-    price: parsedPrice,
-    amount: parsedAmount,
-    filled: isMarket ? parsedAmount : 0,
-    remaining: isMarket ? 0 : parsedAmount,
-    status: isMarket ? 'filled' : 'open',
-    createdAt: Date.now(),
-    triggerPrice: triggerPrice ? Number(triggerPrice) : undefined,
-    feePaid: isMarket ? (parsedPrice * parsedAmount) * 0.001 : 0,
-    isPaper: false,
-  };
-
-  if (isMarket) {
-    // Settle locked funds & credit acquired asset
-    ledger.settleLockedFunds('user_live', requiredAsset, requiredAmount);
-    const acquiredAsset = side === 'buy' ? base : quote;
-    const acquiredAmount = side === 'buy' ? parsedAmount : parsedPrice * parsedAmount * 0.999;
-    ledger.transfer('EXCHANGE_ORDER_MATCH', 'user_live', acquiredAsset, acquiredAmount, `Spot fill for ${orderId}`);
-  }
-
-  userOrders.unshift(newOrder);
-  res.json({ success: true, order: newOrder });
+  return res.status(403).json({ error: 'Live trading is disabled: authentication, persistent accounting, and a verified exchange adapter are not configured. Use paper mode.' });
 });
 
 app.delete('/api/orders/:id', (req: Request, res: Response) => {
@@ -567,42 +518,13 @@ app.delete('/api/orders/:id', (req: Request, res: Response) => {
   res.json({ success: true, canceledOrder: order });
 });
 
-// 8. Simulated Deposit
-app.post('/api/deposit', (req: Request, res: Response) => {
+// 8. Deposits and withdrawals remain disabled until chain verification and custody integrations exist.
+app.post('/api/deposit', (_req: Request, res: Response) => {
   return res.status(403).json({ error: 'Deposits are disabled. This demo does not verify on-chain transactions.' });
-  /* const { asset, amount, network, txHash } = req.body;
-  if (!asset || !amount || Number(amount) <= 0) {
-    return res.status(400).json({ error: 'Invalid deposit asset or amount' });
-  }
-
-  const result = ledger.transfer(
-    'EXTERNAL_NETWORK',
-    'user_live',
-    asset,
-    Number(amount),
-    `Deposit on ${network || 'Mainnet'} tx: ${txHash || 'sim_tx_' + Date.now()}`
-  );
-
-  res.json(result); */
 });
 
-// 9. Simulated Withdrawal
-app.post('/api/withdraw', (req: Request, res: Response) => {
+app.post('/api/withdraw', (_req: Request, res: Response) => {
   return res.status(403).json({ error: 'Withdrawals are disabled. This demo cannot submit or verify blockchain transfers.' });
-  /* const { asset, amount, destinationAddress, network } = req.body;
-  if (!asset || !amount || Number(amount) <= 0 || !destinationAddress) {
-    return res.status(400).json({ error: 'Invalid withdrawal payload' });
-  }
-
-  const result = ledger.transfer(
-    'user_live',
-    'EXTERNAL_WITHDRAWAL',
-    asset,
-    Number(amount),
-    `Withdrawal to ${destinationAddress} on ${network || 'Mainnet'}`
-  );
-
-  res.json(result); */
 });
 
 // 10. Paper Trading virtual balance reset
