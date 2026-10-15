@@ -9,8 +9,9 @@
 
   body {
     font-family: var(--font-sans);
-    background-color: #080a0f;
-    color: #e2e8f0;
+    background-color: #eef5ff;
+    color: #172033;
+    color-scheme: light;
     overflow-x: hidden;
   }
 }
@@ -21,14 +22,14 @@
   height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #080a0f;
+  background: #e8eef8;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #cbd5e1;
   border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #94a3b8;
 }
 
 /* Tabular figures for financial accuracy */
@@ -53,4 +54,90 @@
 
 .flash-sell {
   animation: flashRed 0.6s ease-out;
+}
+
+
+/* Aliens Exchange light theme: keep layout intact, change only the palette. */
+:root {
+  color-scheme: light;
+  --ae-page: #eef5ff;
+  --ae-surface: rgba(255, 255, 255, 0.88);
+  --ae-surface-solid: #ffffff;
+  --ae-border: #d8e1ef;
+  --ae-text: #172033;
+  --ae-muted: #718096;
+  --ae-blue: #60a5fa;
+  --ae-purple: #7658e8;
+  --ae-green: #10c99a;
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(ellipse at 8% 0%, rgba(125, 211, 252, 0.26), transparent 38%),
+    radial-gradient(ellipse at 92% 0%, rgba(196, 181, 253, 0.25), transparent 34%),
+    var(--ae-page);
+  color: var(--ae-text);
+}
+
+/* Repaint the app's existing dark canvas and panel utilities without changing layout. */
+[class~="bg-[#080a0f]"],
+[class~="bg-[#0a0d14]"],
+[class~="bg-[#0b0f17]"],
+[class~="bg-[#0c111b]"],
+[class~="bg-[#0d1117]"],
+[class~="bg-[#0f172a]"] {
+  background-color: var(--ae-page) !important;
+}
+
+[class*="bg-[#111"],
+[class*="bg-[#121"],
+[class*="bg-[#131"],
+[class*="bg-[#151"],
+[class*="bg-[#161"],
+[class*="bg-[#172"],
+[class*="bg-[#182"] {
+  background-color: var(--ae-surface-solid) !important;
+}
+
+[class*="border-[#18"],
+[class*="border-[#1e"],
+[class*="border-[#20"],
+[class*="border-[#22"],
+[class*="border-slate-800"],
+[class*="border-slate-700"] {
+  border-color: var(--ae-border) !important;
+}
+
+[class~="text-slate-100"],
+[class~="text-slate-200"],
+[class~="text-slate-300"],
+[class~="text-white"] {
+  color: var(--ae-text) !important;
+}
+
+[class~="text-slate-400"],
+[class~="text-slate-500"],
+[class~="text-gray-400"],
+[class~="text-gray-500"] {
+  color: var(--ae-muted) !important;
+}
+
+/* Inputs and select controls use the same soft neutral surface. */
+input, select, textarea {
+  color: var(--ae-text);
+  background-color: rgba(255, 255, 255, 0.88);
+  border-color: var(--ae-border);
+}
+
+input::placeholder, textarea::placeholder {
+  color: #94a3b8;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.24);
+  color: #172033;
 }
