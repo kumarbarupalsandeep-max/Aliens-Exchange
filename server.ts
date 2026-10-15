@@ -25,7 +25,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.disable('x-powered-by');
+app.use(express.json({ limit: '64kb', strict: true }));
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
+
+// This application is a demo, not a custody or live-trading service.
+const LIVE_LEDGER_OPERATIONS_ENABLED = false;
 
 // Initialize Gemini Client server-side
 const ai = process.env.GEMINI_API_KEY
@@ -420,19 +430,33 @@ app.get('/api/orders', (req: Request, res: Response) => {
 });
 
 app.post('/api/orders', (req: Request, res: Response) => {
-  const { symbol, side, type, price, amount, triggerPrice, isPaper } = req.body;
-  if (!symbol || !side || !type || !amount || amount <= 0) {
-    return res.status(400).json({ error: 'Missing required order fields' });
-  }
-
+  const { symbol, side, type, price, amount, triggerPrice, isPaper } = req.body ?? {};
+  const supportedSymbols = new Set(MARKETS.map((market) => market.symbol));
+  const supportedTypes = new Set(['limit', 'market', 'stop_limit', 'trailing_stop']);
   const parsedAmount = Number(amount);
   const parsedPrice = Number(price);
+  const parsedTriggerPrice = triggerPrice === undefined ? undefined : Number(triggerPrice);
+  if (
+    typeof symbol !== 'string' || !supportedSymbols.has(symbol) ||
+    (side !== 'buy' && side !== 'sell') ||
+    typeof type !== 'string' || !supportedTypes.has(type) ||
+    !Number.isFinite(parsedAmount) || parsedAmount <= 0 ||
+    !Number.isFinite(parsedPrice) || parsedPrice <= 0 ||
+    (parsedTriggerPrice !== undefined && (!Number.isFinite(parsedTriggerPrice) || parsedTriggerPrice <= 0)) ||
+    typeof isPaper !== 'boolean'
+  ) {
+    return res.status(400).json({ error: 'Invalid order: check symbol, side, type, positive finite price/amount, trigger price, and paper-mode flag' });
+  }
 
   if (isPaper) {
     // Paper trading path
     const orderCost = parsedPrice * parsedAmount;
-    if (side === 'buy' && paperBalance.USDT < orderCost) {
-      return res.status(400).json({ error: 'Insufficient paper USDT balance' });
+    const [paperBase, paperQuote] = symbol.split('/');
+    const requiredPaperAsset = side === 'buy' ? paperQuote : paperBase;
+    const requiredPaperAmount = side === 'buy' ? orderCost : parsedAmount;
+    const availablePaperBalance = paperBalance[requiredPaperAsset as keyof typeof paperBalance] || 0;
+    if (availablePaperBalance < requiredPaperAmount) {
+      return res.status(400).json({ error: `Insufficient paper ${requiredPaperAsset} balance` });
     }
 
     const orderId = `PORD-${Date.now().toString().slice(-6)}`;
@@ -453,19 +477,24 @@ app.post('/api/orders', (req: Request, res: Response) => {
     };
 
     if (type === 'market') {
+      const fee = orderCost * 0.001;
       if (side === 'buy') {
-        paperBalance.USDT -= orderCost;
-        const [base] = symbol.split('/');
-        paperBalance[base as keyof typeof paperBalance] = (paperBalance[base as keyof typeof paperBalance] || 0) + parsedAmount;
+        paperBalance.USDT -= orderCost + fee;
+        paperBalance[paperBase as keyof typeof paperBalance] = (paperBalance[paperBase as keyof typeof paperBalance] || 0) + parsedAmount;
       } else {
-        const [base] = symbol.split('/');
-        paperBalance[base as keyof typeof paperBalance] = (paperBalance[base as keyof typeof paperBalance] || 0) - parsedAmount;
-        paperBalance.USDT += orderCost;
+        paperBalance[paperBase as keyof typeof paperBalance] = (paperBalance[paperBase as keyof typeof paperBalance] || 0) - parsedAmount;
+        paperBalance.USDT += orderCost - fee;
       }
+      newOrder.feePaid = fee;
     }
 
     userOrders.unshift(newOrder);
     return res.json({ success: true, order: newOrder, message: 'Paper order submitted successfully' });
+  }
+
+  // Never allow this demo to mutate real-looking balances as if it were an exchange.
+  if (!LIVE_LEDGER_OPERATIONS_ENABLED) {
+    return res.status(403).json({ error: 'Live trading is disabled: authentication, persistent accounting, and a verified exchange adapter are not configured. Use paper mode.' });
   }
 
   // Live order: verify & lock funds through double-entry ledger
@@ -540,7 +569,8 @@ app.delete('/api/orders/:id', (req: Request, res: Response) => {
 
 // 8. Simulated Deposit
 app.post('/api/deposit', (req: Request, res: Response) => {
-  const { asset, amount, network, txHash } = req.body;
+  return res.status(403).json({ error: 'Deposits are disabled. This demo does not verify on-chain transactions.' });
+  /* const { asset, amount, network, txHash } = req.body;
   if (!asset || !amount || Number(amount) <= 0) {
     return res.status(400).json({ error: 'Invalid deposit asset or amount' });
   }
@@ -553,12 +583,13 @@ app.post('/api/deposit', (req: Request, res: Response) => {
     `Deposit on ${network || 'Mainnet'} tx: ${txHash || 'sim_tx_' + Date.now()}`
   );
 
-  res.json(result);
+  res.json(result); */
 });
 
 // 9. Simulated Withdrawal
 app.post('/api/withdraw', (req: Request, res: Response) => {
-  const { asset, amount, destinationAddress, network } = req.body;
+  return res.status(403).json({ error: 'Withdrawals are disabled. This demo cannot submit or verify blockchain transfers.' });
+  /* const { asset, amount, destinationAddress, network } = req.body;
   if (!asset || !amount || Number(amount) <= 0 || !destinationAddress) {
     return res.status(400).json({ error: 'Invalid withdrawal payload' });
   }
@@ -571,7 +602,7 @@ app.post('/api/withdraw', (req: Request, res: Response) => {
     `Withdrawal to ${destinationAddress} on ${network || 'Mainnet'}`
   );
 
-  res.json(result);
+  res.json(result); */
 });
 
 // 10. Paper Trading virtual balance reset
