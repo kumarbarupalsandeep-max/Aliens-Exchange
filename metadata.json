@@ -1,0 +1,8 @@
+{
+  "name": "Aliens Exchange",
+  "description": "Next-generation cryptocurrency exchange terminal featuring advanced spot trading, price-impact simulation, paper trading, double-entry asset ledger, trading bots, and AI market intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
