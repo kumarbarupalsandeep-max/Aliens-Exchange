@@ -133,3 +133,46 @@ test('buildProofOfReservesMerkle generates root hash and calculates total liabil
   assert.ok(proof.rootHash.startsWith('0x'));
   assert.equal(proof.leaves.length, 4);
 });
+
+
+test('ledger rejects invalid amounts and does not expose mutable history entries', () => {
+  const ledger = new DoubleEntryLedger();
+  assert.equal(ledger.transfer('EXTERNAL_NETWORK', 'user_1', 'USDT', Number.NaN, 'invalid').success, false);
+  assert.equal(ledger.transfer('EXTERNAL_NETWORK', 'user_1', 'USDT', -1, 'invalid').success, false);
+  assert.equal(ledger.transfer('same', 'same', 'USDT', 1, 'invalid').success, false);
+  assert.equal(ledger.transfer('EXTERNAL_NETWORK', 'user_1', 'USDT', 10, 'deposit').success, true);
+
+  const history = ledger.getHistory();
+  history[0].reason = 'tampered';
+  history[0].hash = '0xnot-a-real-hash';
+  assert.equal(ledger.verifyIntegrity('USDT').valid, true);
+});
+
+test('order impact rejects invalid size and fee values', () => {
+  const book: Orderbook = {
+    bids: [{ price: 100, size: 1 }],
+    asks: [{ price: 101, size: 1 }],
+  };
+  assert.throws(() => calculateOrderImpact(book, 'buy', Number.NaN), /finite positive/);
+  assert.throws(() => calculateOrderImpact(book, 'buy', 1, -0.1), /non-negative/);
+});
+
+test('order impact sorts order book levels and ignores invalid levels', () => {
+  const book: Orderbook = {
+    bids: [{ price: 99, size: 1 }, { price: 100, size: 1 }, { price: -1, size: 99 }],
+    asks: [{ price: 103, size: 1 }, { price: 101, size: 1 }],
+  };
+  const buy = calculateOrderImpact(book, 'buy', 1);
+  const sell = calculateOrderImpact(book, 'sell', 1);
+  assert.equal(buy.averageFillPrice, 101);
+  assert.equal(sell.averageFillPrice, 100);
+});
+
+test('grid and portfolio risk reject invalid numeric inputs', () => {
+  assert.throws(() => generateGridLevels(-1, 10, 5, 4, 100), /Invalid grid/);
+  assert.throws(() => calculatePortfolioRisk([{ asset: 'BTC', amount: -1, currentPrice: 100, dailyVolatility: 0.1 }]), /finite, non-negative/);
+});
+
+test('proof-of-reserves builder rejects invalid balances', () => {
+  assert.throws(() => buildProofOfReservesMerkle([{ id: 'user_1', balanceUSDT: Number.NaN }]), /finite non-negative/);
+});
