@@ -592,6 +592,10 @@ app.post('/api/backtest', (req: Request, res: Response) => {
     maxDrawdownPercent: 7.4,
     sharpeRatio: 1.84,
     equityCurve,
+    simulation: {
+      isSimulated: true,
+      warning: 'Illustrative output only. This endpoint does not run a historical-data backtest and must not be used to predict returns.',
+    },
   });
 });
 
@@ -683,11 +687,13 @@ app.get('/api/risk-monitor', (req: Request, res: Response) => {
 // 15. Security & Sessions
 app.get('/api/security', (req: Request, res: Response) => {
   res.json({
+    mode: 'demo',
+    isSimulated: true,
     sessions: activeSessions,
-    twoFactorEnabled: true,
-    antiPhishingCode: 'ALIEN-SEC-8820',
-    whitelistEnabled: true,
-    withdrawalDelayHours: 24,
+    twoFactorEnabled: false,
+    antiPhishingCode: null,
+    whitelistEnabled: false,
+    withdrawalDelayHours: 0,
   });
 });
 
