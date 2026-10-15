@@ -25,7 +25,16 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.disable('x-powered-by');
+app.use(express.json({ limit: '64kb', strict: true }));
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
+
+// This application is a demo, not a custody or live-trading service.
 
 // Initialize Gemini Client server-side
 const ai = process.env.GEMINI_API_KEY
@@ -235,7 +244,7 @@ let userOrders: any[] = [
     status: 'open',
     createdAt: Date.now() - 1000 * 60 * 42,
     feePaid: 0,
-    isPaper: false,
+    isPaper: true,
   },
   {
     id: 'ORD-97431',
@@ -250,7 +259,7 @@ let userOrders: any[] = [
     status: 'open',
     createdAt: Date.now() - 1000 * 60 * 120,
     feePaid: 0,
-    isPaper: false,
+    isPaper: true,
   },
 ];
 
@@ -390,13 +399,20 @@ app.get('/api/trades', (req: Request, res: Response) => {
 
 // 5. Smart Order Preview & Slippage Estimator
 app.post('/api/order-impact', (req: Request, res: Response) => {
-  const { symbol, side, size } = req.body;
-  if (!symbol || !side || !size || size <= 0) {
-    return res.status(400).json({ error: 'Invalid parameters: symbol, side and positive size are required' });
+  const { symbol, side, size } = req.body ?? {};
+  const parsedSize = Number(size);
+  if (
+    typeof symbol !== 'string' ||
+    !MARKETS.some((market) => market.symbol === symbol) ||
+    (side !== 'buy' && side !== 'sell') ||
+    !Number.isFinite(parsedSize) ||
+    parsedSize <= 0
+  ) {
+    return res.status(400).json({ error: 'Invalid parameters: choose a supported symbol, buy/sell side, and finite positive size' });
   }
 
   const orderbook = getDynamicOrderbook(symbol);
-  const impact = calculateOrderImpact(orderbook, side, Number(size));
+  const impact = calculateOrderImpact(orderbook, side, parsedSize);
   res.json({ symbol, impact });
 });
 
@@ -420,19 +436,33 @@ app.get('/api/orders', (req: Request, res: Response) => {
 });
 
 app.post('/api/orders', (req: Request, res: Response) => {
-  const { symbol, side, type, price, amount, triggerPrice, isPaper } = req.body;
-  if (!symbol || !side || !type || !amount || amount <= 0) {
-    return res.status(400).json({ error: 'Missing required order fields' });
-  }
-
+  const { symbol, side, type, price, amount, triggerPrice, isPaper } = req.body ?? {};
+  const supportedSymbols = new Set(MARKETS.map((market) => market.symbol));
+  const supportedTypes = new Set(['limit', 'market', 'stop_limit', 'trailing_stop']);
   const parsedAmount = Number(amount);
   const parsedPrice = Number(price);
+  const parsedTriggerPrice = triggerPrice === undefined ? undefined : Number(triggerPrice);
+  if (
+    typeof symbol !== 'string' || !supportedSymbols.has(symbol) ||
+    (side !== 'buy' && side !== 'sell') ||
+    typeof type !== 'string' || !supportedTypes.has(type) ||
+    !Number.isFinite(parsedAmount) || parsedAmount <= 0 ||
+    !Number.isFinite(parsedPrice) || parsedPrice <= 0 ||
+    (parsedTriggerPrice !== undefined && (!Number.isFinite(parsedTriggerPrice) || parsedTriggerPrice <= 0)) ||
+    typeof isPaper !== 'boolean'
+  ) {
+    return res.status(400).json({ error: 'Invalid order: check symbol, side, type, positive finite price/amount, trigger price, and paper-mode flag' });
+  }
 
   if (isPaper) {
     // Paper trading path
     const orderCost = parsedPrice * parsedAmount;
-    if (side === 'buy' && paperBalance.USDT < orderCost) {
-      return res.status(400).json({ error: 'Insufficient paper USDT balance' });
+    const [paperBase, paperQuote] = symbol.split('/');
+    const requiredPaperAsset = side === 'buy' ? paperQuote : paperBase;
+    const requiredPaperAmount = side === 'buy' ? orderCost * 1.001 : parsedAmount;
+    const availablePaperBalance = paperBalance[requiredPaperAsset as keyof typeof paperBalance] || 0;
+    if (availablePaperBalance < requiredPaperAmount) {
+      return res.status(400).json({ error: `Insufficient paper ${requiredPaperAsset} balance` });
     }
 
     const orderId = `PORD-${Date.now().toString().slice(-6)}`;
@@ -453,65 +483,22 @@ app.post('/api/orders', (req: Request, res: Response) => {
     };
 
     if (type === 'market') {
+      const fee = orderCost * 0.001;
       if (side === 'buy') {
-        paperBalance.USDT -= orderCost;
-        const [base] = symbol.split('/');
-        paperBalance[base as keyof typeof paperBalance] = (paperBalance[base as keyof typeof paperBalance] || 0) + parsedAmount;
+        paperBalance.USDT -= orderCost + fee;
+        paperBalance[paperBase as keyof typeof paperBalance] = (paperBalance[paperBase as keyof typeof paperBalance] || 0) + parsedAmount;
       } else {
-        const [base] = symbol.split('/');
-        paperBalance[base as keyof typeof paperBalance] = (paperBalance[base as keyof typeof paperBalance] || 0) - parsedAmount;
-        paperBalance.USDT += orderCost;
+        paperBalance[paperBase as keyof typeof paperBalance] = (paperBalance[paperBase as keyof typeof paperBalance] || 0) - parsedAmount;
+        paperBalance.USDT += orderCost - fee;
       }
+      newOrder.feePaid = fee;
     }
 
     userOrders.unshift(newOrder);
     return res.json({ success: true, order: newOrder, message: 'Paper order submitted successfully' });
   }
 
-  // Live order: verify & lock funds through double-entry ledger
-  const [base, quote] = symbol.split('/');
-  const requiredAsset = side === 'buy' ? quote : base;
-  const requiredAmount = side === 'buy' ? parsedPrice * parsedAmount : parsedAmount;
-
-  const currentBal = ledger.getBalance('user_live', requiredAsset);
-  if (currentBal.available < requiredAmount) {
-    return res.status(400).json({
-      error: `Insufficient available ${requiredAsset}: have ${currentBal.available}, required ${requiredAmount.toFixed(4)}`,
-    });
-  }
-
-  // Lock funds in ledger
-  ledger.lockFunds('user_live', requiredAsset, requiredAmount);
-
-  const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-  const isMarket = type === 'market';
-
-  const newOrder = {
-    id: orderId,
-    symbol,
-    side,
-    type,
-    price: parsedPrice,
-    amount: parsedAmount,
-    filled: isMarket ? parsedAmount : 0,
-    remaining: isMarket ? 0 : parsedAmount,
-    status: isMarket ? 'filled' : 'open',
-    createdAt: Date.now(),
-    triggerPrice: triggerPrice ? Number(triggerPrice) : undefined,
-    feePaid: isMarket ? (parsedPrice * parsedAmount) * 0.001 : 0,
-    isPaper: false,
-  };
-
-  if (isMarket) {
-    // Settle locked funds & credit acquired asset
-    ledger.settleLockedFunds('user_live', requiredAsset, requiredAmount);
-    const acquiredAsset = side === 'buy' ? base : quote;
-    const acquiredAmount = side === 'buy' ? parsedAmount : parsedPrice * parsedAmount * 0.999;
-    ledger.transfer('EXCHANGE_ORDER_MATCH', 'user_live', acquiredAsset, acquiredAmount, `Spot fill for ${orderId}`);
-  }
-
-  userOrders.unshift(newOrder);
-  res.json({ success: true, order: newOrder });
+  return res.status(403).json({ error: 'Live trading is disabled: authentication, persistent accounting, and a verified exchange adapter are not configured. Use paper mode.' });
 });
 
 app.delete('/api/orders/:id', (req: Request, res: Response) => {
@@ -538,40 +525,13 @@ app.delete('/api/orders/:id', (req: Request, res: Response) => {
   res.json({ success: true, canceledOrder: order });
 });
 
-// 8. Simulated Deposit
-app.post('/api/deposit', (req: Request, res: Response) => {
-  const { asset, amount, network, txHash } = req.body;
-  if (!asset || !amount || Number(amount) <= 0) {
-    return res.status(400).json({ error: 'Invalid deposit asset or amount' });
-  }
-
-  const result = ledger.transfer(
-    'EXTERNAL_NETWORK',
-    'user_live',
-    asset,
-    Number(amount),
-    `Deposit on ${network || 'Mainnet'} tx: ${txHash || 'sim_tx_' + Date.now()}`
-  );
-
-  res.json(result);
+// 8. Deposits and withdrawals remain disabled until chain verification and custody integrations exist.
+app.post('/api/deposit', (_req: Request, res: Response) => {
+  return res.status(403).json({ error: 'Deposits are disabled. This demo does not verify on-chain transactions.' });
 });
 
-// 9. Simulated Withdrawal
-app.post('/api/withdraw', (req: Request, res: Response) => {
-  const { asset, amount, destinationAddress, network } = req.body;
-  if (!asset || !amount || Number(amount) <= 0 || !destinationAddress) {
-    return res.status(400).json({ error: 'Invalid withdrawal payload' });
-  }
-
-  const result = ledger.transfer(
-    'user_live',
-    'EXTERNAL_WITHDRAWAL',
-    asset,
-    Number(amount),
-    `Withdrawal to ${destinationAddress} on ${network || 'Mainnet'}`
-  );
-
-  res.json(result);
+app.post('/api/withdraw', (_req: Request, res: Response) => {
+  return res.status(403).json({ error: 'Withdrawals are disabled. This demo cannot submit or verify blockchain transfers.' });
 });
 
 // 10. Paper Trading virtual balance reset
@@ -639,6 +599,10 @@ app.post('/api/backtest', (req: Request, res: Response) => {
     maxDrawdownPercent: 7.4,
     sharpeRatio: 1.84,
     equityCurve,
+    simulation: {
+      isSimulated: true,
+      warning: 'Illustrative output only. This endpoint does not run a historical-data backtest and must not be used to predict returns.',
+    },
   });
 });
 
@@ -648,23 +612,37 @@ app.get('/api/bots', (req: Request, res: Response) => {
 });
 
 app.post('/api/bots', (req: Request, res: Response) => {
-  const { name, type, symbol, investmentUSDT, config } = req.body;
+  const { name, type, symbol, investmentUSDT, config } = req.body ?? {};
+  const supportedTypes = new Set(['grid', 'dca', 'arbitrage']);
+  const supportedSymbols = new Set(MARKETS.map((market) => market.symbol));
+  const investment = Number(investmentUSDT ?? 2000);
+  if (
+    (type !== undefined && (typeof type !== 'string' || !supportedTypes.has(type))) ||
+    (symbol !== undefined && (typeof symbol !== 'string' || !supportedSymbols.has(symbol))) ||
+    !Number.isFinite(investment) || investment <= 0 ||
+    (name !== undefined && (typeof name !== 'string' || !name.trim())) ||
+    (config !== undefined && (config === null || typeof config !== 'object' || Array.isArray(config)))
+  ) {
+    return res.status(400).json({ error: 'Invalid bot configuration' });
+  }
+  const botType = type || 'grid';
+  const botSymbol = symbol || 'BTC/USDT';
   const newBot = {
     id: `BOT-${Date.now().toString().slice(-6)}`,
-    name: name || `${symbol} ${type.toUpperCase()} Bot`,
-    type: type || 'grid',
-    symbol: symbol || 'BTC/USDT',
-    status: 'active',
-    investmentUSDT: Number(investmentUSDT) || 2000,
+    name: (name as string | undefined)?.trim() || `${botSymbol} ${botType.toUpperCase()} Bot`,
+    type: botType,
+    symbol: botSymbol,
+    status: 'paused',
+    investmentUSDT: investment,
     unrealizedPnL: 0,
     realizedPnL: 0,
     roiPercent: 0,
-    runtimeHours: 0.1,
+    runtimeHours: 0,
     tradesCompleted: 0,
     config: config || {},
   };
   activeBots.unshift(newBot);
-  res.json({ success: true, bot: newBot });
+  res.json({ success: true, bot: newBot, isSimulated: true });
 });
 
 app.patch('/api/bots/:id', (req: Request, res: Response) => {
@@ -672,6 +650,9 @@ app.patch('/api/bots/:id', (req: Request, res: Response) => {
   const { status } = req.body;
   const bot = activeBots.find((b) => b.id === id);
   if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  if (status !== undefined && !['active', 'paused', 'stopped'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid bot status' });
+  }
   if (status) bot.status = status;
   res.json({ success: true, bot });
 });
@@ -700,8 +681,10 @@ app.get('/api/proof-of-reserves', (req: Request, res: Response) => {
     totalReservesUSDT,
     reserveRatioPercent,
     isFullyCollateralized: reserveRatioPercent >= 100,
-    lastAuditDate: 'October 2026',
-    auditor: 'CertiK & Hacken Verified Cryptographic Attestation',
+    lastAuditDate: 'Demo data — no audit performed',
+    auditor: 'Not audited — sample data only',
+    dataSource: 'simulated_demo_data',
+    isAudited: false,
     userProof: {
       userId: 'user_live',
       balanceUSDT: 25000,
@@ -728,11 +711,13 @@ app.get('/api/risk-monitor', (req: Request, res: Response) => {
 // 15. Security & Sessions
 app.get('/api/security', (req: Request, res: Response) => {
   res.json({
+    mode: 'demo',
+    isSimulated: true,
     sessions: activeSessions,
-    twoFactorEnabled: true,
-    antiPhishingCode: 'ALIEN-SEC-8820',
-    whitelistEnabled: true,
-    withdrawalDelayHours: 24,
+    twoFactorEnabled: false,
+    antiPhishingCode: null,
+    whitelistEnabled: false,
+    withdrawalDelayHours: 0,
   });
 });
 
