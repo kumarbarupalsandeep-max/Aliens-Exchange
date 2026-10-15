@@ -399,13 +399,20 @@ app.get('/api/trades', (req: Request, res: Response) => {
 
 // 5. Smart Order Preview & Slippage Estimator
 app.post('/api/order-impact', (req: Request, res: Response) => {
-  const { symbol, side, size } = req.body;
-  if (!symbol || !side || !size || size <= 0) {
-    return res.status(400).json({ error: 'Invalid parameters: symbol, side and positive size are required' });
+  const { symbol, side, size } = req.body ?? {};
+  const parsedSize = Number(size);
+  if (
+    typeof symbol !== 'string' ||
+    !MARKETS.some((market) => market.symbol === symbol) ||
+    (side !== 'buy' && side !== 'sell') ||
+    !Number.isFinite(parsedSize) ||
+    parsedSize <= 0
+  ) {
+    return res.status(400).json({ error: 'Invalid parameters: choose a supported symbol, buy/sell side, and finite positive size' });
   }
 
   const orderbook = getDynamicOrderbook(symbol);
-  const impact = calculateOrderImpact(orderbook, side, Number(size));
+  const impact = calculateOrderImpact(orderbook, side, parsedSize);
   res.json({ symbol, impact });
 });
 
@@ -605,23 +612,37 @@ app.get('/api/bots', (req: Request, res: Response) => {
 });
 
 app.post('/api/bots', (req: Request, res: Response) => {
-  const { name, type, symbol, investmentUSDT, config } = req.body;
+  const { name, type, symbol, investmentUSDT, config } = req.body ?? {};
+  const supportedTypes = new Set(['grid', 'dca', 'arbitrage']);
+  const supportedSymbols = new Set(MARKETS.map((market) => market.symbol));
+  const investment = Number(investmentUSDT ?? 2000);
+  if (
+    (type !== undefined && (typeof type !== 'string' || !supportedTypes.has(type))) ||
+    (symbol !== undefined && (typeof symbol !== 'string' || !supportedSymbols.has(symbol))) ||
+    !Number.isFinite(investment) || investment <= 0 ||
+    (name !== undefined && (typeof name !== 'string' || !name.trim())) ||
+    (config !== undefined && (config === null || typeof config !== 'object' || Array.isArray(config)))
+  ) {
+    return res.status(400).json({ error: 'Invalid bot configuration' });
+  }
+  const botType = type || 'grid';
+  const botSymbol = symbol || 'BTC/USDT';
   const newBot = {
     id: `BOT-${Date.now().toString().slice(-6)}`,
-    name: name || `${symbol} ${type.toUpperCase()} Bot`,
-    type: type || 'grid',
-    symbol: symbol || 'BTC/USDT',
-    status: 'active',
-    investmentUSDT: Number(investmentUSDT) || 2000,
+    name: (name as string | undefined)?.trim() || `${botSymbol} ${botType.toUpperCase()} Bot`,
+    type: botType,
+    symbol: botSymbol,
+    status: 'paused',
+    investmentUSDT: investment,
     unrealizedPnL: 0,
     realizedPnL: 0,
     roiPercent: 0,
-    runtimeHours: 0.1,
+    runtimeHours: 0,
     tradesCompleted: 0,
     config: config || {},
   };
   activeBots.unshift(newBot);
-  res.json({ success: true, bot: newBot });
+  res.json({ success: true, bot: newBot, isSimulated: true });
 });
 
 app.patch('/api/bots/:id', (req: Request, res: Response) => {
@@ -629,6 +650,9 @@ app.patch('/api/bots/:id', (req: Request, res: Response) => {
   const { status } = req.body;
   const bot = activeBots.find((b) => b.id === id);
   if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  if (status !== undefined && !['active', 'paused', 'stopped'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid bot status' });
+  }
   if (status) bot.status = status;
   res.json({ success: true, bot });
 });
