@@ -453,7 +453,7 @@ app.post('/api/orders', (req: Request, res: Response) => {
     const orderCost = parsedPrice * parsedAmount;
     const [paperBase, paperQuote] = symbol.split('/');
     const requiredPaperAsset = side === 'buy' ? paperQuote : paperBase;
-    const requiredPaperAmount = side === 'buy' ? orderCost : parsedAmount;
+    const requiredPaperAmount = side === 'buy' ? orderCost * 1.001 : parsedAmount;
     const availablePaperBalance = paperBalance[requiredPaperAsset as keyof typeof paperBalance] || 0;
     if (availablePaperBalance < requiredPaperAmount) {
       return res.status(400).json({ error: `Insufficient paper ${requiredPaperAsset} balance` });
@@ -731,8 +731,10 @@ app.get('/api/proof-of-reserves', (req: Request, res: Response) => {
     totalReservesUSDT,
     reserveRatioPercent,
     isFullyCollateralized: reserveRatioPercent >= 100,
-    lastAuditDate: 'October 2026',
-    auditor: 'CertiK & Hacken Verified Cryptographic Attestation',
+    lastAuditDate: 'Demo data — no audit performed',
+    auditor: 'Not audited — sample data only',
+    dataSource: 'simulated_demo_data',
+    isAudited: false,
     userProof: {
       userId: 'user_live',
       balanceUSDT: 25000,
