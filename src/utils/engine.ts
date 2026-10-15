@@ -38,8 +38,24 @@ export function calculateOrderImpact(
   size: number,
   feeRate = 0.001 // 0.1% standard taker fee
 ): OrderImpactResult {
-  const levels = side === 'buy' ? orderbook.asks : orderbook.bids;
-  if (!levels || levels.length === 0 || size <= 0) {
+  if (side !== 'buy' && side !== 'sell') {
+    throw new Error('Order side must be buy or sell');
+  }
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new Error('Order size must be a finite positive number');
+  }
+  if (!Number.isFinite(feeRate) || feeRate < 0) {
+    throw new Error('Fee rate must be a finite non-negative number');
+  }
+
+  const sourceLevels = side === 'buy' ? orderbook?.asks : orderbook?.bids;
+  const levels = Array.isArray(sourceLevels)
+    ? sourceLevels
+        .filter((level) => Number.isFinite(level.price) && level.price > 0 && Number.isFinite(level.size) && level.size > 0)
+        .slice()
+        .sort((a, b) => (side === 'buy' ? a.price - b.price : b.price - a.price))
+    : [];
+  if (levels.length === 0) {
     return {
       side,
       requestedSize: size,
@@ -165,8 +181,14 @@ export class DoubleEntryLedger {
     amount: number,
     reason: string
   ): { success: boolean; error?: string; entry?: LedgerEntry } {
-    if (amount <= 0) {
-      return { success: false, error: 'Transfer amount must be strictly positive' };
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { success: false, error: 'Transfer amount must be a finite, strictly positive number' };
+    }
+    if (![fromAccount, toAccount, asset, reason].every((value) => typeof value === 'string' && value.trim().length > 0)) {
+      return { success: false, error: 'Source, destination, asset, and reason are required' };
+    }
+    if (fromAccount === toAccount) {
+      return { success: false, error: 'Source and destination accounts must differ' };
     }
 
     // External system deposit bypasses user available check
@@ -211,6 +233,7 @@ export class DoubleEntryLedger {
    * Lock funds for active orders
    */
   public lockFunds(accountId: string, asset: string, amount: number): boolean {
+    if (!accountId.trim() || !asset.trim() || !Number.isFinite(amount) || amount <= 0) return false;
     const bal = this.getOrCreateAccount(accountId, asset);
     if (bal.available < amount) return false;
     bal.available -= amount;
@@ -222,6 +245,7 @@ export class DoubleEntryLedger {
    * Release locked funds back to available
    */
   public releaseLockedFunds(accountId: string, asset: string, amount: number): boolean {
+    if (!accountId.trim() || !asset.trim() || !Number.isFinite(amount) || amount <= 0) return false;
     const bal = this.getOrCreateAccount(accountId, asset);
     if (bal.locked < amount) return false;
     bal.locked -= amount;
@@ -233,6 +257,7 @@ export class DoubleEntryLedger {
    * Settle an order execution from locked funds
    */
   public settleLockedFunds(accountId: string, asset: string, amount: number): boolean {
+    if (!accountId.trim() || !asset.trim() || !Number.isFinite(amount) || amount <= 0) return false;
     const bal = this.getOrCreateAccount(accountId, asset);
     if (bal.locked < amount) return false;
     bal.locked -= amount;
@@ -244,17 +269,46 @@ export class DoubleEntryLedger {
   }
 
   /**
-   * Mathematical verification: Verifies ledger solvency and integrity
+   * Performs basic in-memory consistency checks.
+   * This is NOT a cryptographic audit or proof of reserves.
    */
   public verifyIntegrity(asset: string): { valid: boolean; totalInCirculation: number } {
+    if (!asset.trim()) return { valid: false, totalInCirculation: 0 };
+
     let total = 0;
+    let valid = true;
     for (const [, assetMap] of this.balances.entries()) {
       const bal = assetMap.get(asset);
       if (bal) {
+        if (
+          !Number.isFinite(bal.available) ||
+          !Number.isFinite(bal.locked) ||
+          bal.available < 0 ||
+          bal.locked < 0
+        ) valid = false;
         total += bal.available + bal.locked;
       }
     }
-    return { valid: true, totalInCirculation: total };
+
+    let previousHash = '0000000000';
+    for (const entry of this.entries) {
+      if (
+        !Number.isFinite(entry.amount) ||
+        entry.amount <= 0 ||
+        !entry.fromAccount ||
+        !entry.toAccount ||
+        !entry.asset
+      ) {
+        valid = false;
+      }
+      const expectedHash = simpleHash(
+        `${previousHash}:${entry.id}:${entry.fromAccount}:${entry.toAccount}:${entry.asset}:${entry.amount}:${entry.reason}`
+      );
+      if (entry.hash !== expectedHash) valid = false;
+      previousHash = entry.hash;
+    }
+
+    return { valid, totalInCirculation: Number(total.toFixed(8)) };
   }
 }
 
@@ -276,7 +330,15 @@ export function generateGridLevels(
   currentPrice: number,
   totalInvestment: number
 ): { levels: GridLevel[]; profitPerGridPercent: number; amountPerGrid: number } {
-  if (lowerPrice >= upperPrice || gridCount < 2 || totalInvestment <= 0) {
+  if (
+    ![lowerPrice, upperPrice, gridCount, currentPrice, totalInvestment].every(Number.isFinite) ||
+    lowerPrice <= 0 ||
+    lowerPrice >= upperPrice ||
+    !Number.isInteger(gridCount) ||
+    gridCount < 2 ||
+    currentPrice <= 0 ||
+    totalInvestment <= 0
+  ) {
     throw new Error('Invalid grid trading parameters');
   }
 
@@ -326,6 +388,16 @@ export interface PortfolioRiskMetrics {
 }
 
 export function calculatePortfolioRisk(positions: AssetPosition[]): PortfolioRiskMetrics {
+  if (!Array.isArray(positions) || positions.some((pos) =>
+    !pos.asset ||
+    ![pos.amount, pos.currentPrice, pos.dailyVolatility].every(Number.isFinite) ||
+    pos.amount < 0 ||
+    pos.currentPrice < 0 ||
+    pos.dailyVolatility < 0
+  )) {
+    throw new Error('Portfolio positions must contain finite, non-negative amounts, prices, and volatility');
+  }
+
   let totalValueUSDT = 0;
   positions.forEach((pos) => {
     totalValueUSDT += pos.amount * pos.currentPrice;
@@ -385,6 +457,12 @@ export interface MerkleLeaf {
 }
 
 export function buildProofOfReservesMerkle(users: { id: string; balanceUSDT: number }[]) {
+  if (!Array.isArray(users) || users.some((u) =>
+    !u.id || !Number.isFinite(u.balanceUSDT) || u.balanceUSDT < 0
+  )) {
+    throw new Error('Proof-of-reserves input must contain user IDs and finite non-negative balances');
+  }
+
   const leaves: MerkleLeaf[] = users.map((u) => {
     const data = `${u.id}:${u.balanceUSDT.toFixed(2)}`;
     return {
@@ -419,7 +497,9 @@ export function buildProofOfReservesMerkle(users: { id: string; balanceUSDT: num
 }
 
 /**
- * Deterministic hash helper for ledger and Merkle proof verification
+ * DEMO-ONLY non-cryptographic hash. Do not use for authentication, signatures,
+ * financial audit trails, or production proof-of-reserves. Replace with a
+ * vetted cryptographic hash implementation before making security claims.
  */
 export function simpleHash(str: string): string {
   let hash = 0;
